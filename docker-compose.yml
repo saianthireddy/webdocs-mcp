@@ -1,0 +1,26 @@
+services:
+  webdocs:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "9111:9111"
+    environment:
+      WEBDOCS_DB_PATH: /data/webdocs.duckdb
+      WEBDOCS_EMBEDDER: ${WEBDOCS_EMBEDDER:-hashing}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - webdocs-data:/data
+    depends_on:
+      - redis
+
+  # Present for the scale-out path: point a worker pool at this broker and
+  # swap JobManager's thread execution for queue consumers. The single-node
+  # default does not require it.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  webdocs-data:
