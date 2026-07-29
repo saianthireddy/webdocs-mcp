@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from webdocs.api import create_app
+from webdocs.config import settings
 
 FIXTURE_SITE: dict[str, str] = {
     "https://docs.example.com": """
@@ -68,3 +69,13 @@ def indexed_client(client: TestClient) -> TestClient:
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
     return client
+
+
+@pytest.fixture(autouse=True)
+def _no_crawl_delay(monkeypatch):
+    """Keep the suite instant: the polite default delay is real seconds.
+
+    Throttling itself is covered explicitly in test_robots.py with an
+    injected clock and sleep, so zeroing it here loses no coverage.
+    """
+    monkeypatch.setattr(settings, "crawl_delay", 0.0)
