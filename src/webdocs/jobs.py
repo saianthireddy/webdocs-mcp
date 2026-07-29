@@ -28,6 +28,7 @@ class Job:
     url: str
     status: str = "pending"  # pending | running | completed | failed
     pages_crawled: int = 0
+    pages_unchanged: int = 0
     chunks_indexed: int = 0
     error: str | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -39,6 +40,7 @@ class Job:
                 "url": self.url,
                 "status": self.status,
                 "pages_crawled": self.pages_crawled,
+                "pages_unchanged": self.pages_unchanged,
                 "chunks_indexed": self.chunks_indexed,
                 "error": self.error,
             }
@@ -85,6 +87,11 @@ class JobManager:
             job.pages_crawled += 1
             job.chunks_indexed += len(chunks)
 
+    def _mark_unchanged(self, job: Job, url: str) -> None:
+        self._db.touch_page(url)
+        with job._lock:
+            job.pages_unchanged += 1
+
     def _run(self, job: Job, max_pages: int | None, max_depth: int | None) -> None:
         with job._lock:
             job.status = "running"
@@ -95,6 +102,9 @@ class JobManager:
                 max_pages=max_pages,
                 max_depth=max_depth,
                 on_page=lambda page: self._index_page(job, page),
+                validators=self._db.validators(),
+                known_links=self._db.known_links(),
+                on_unchanged=lambda url: self._mark_unchanged(job, url),
             )
             with job._lock:
                 job.status = "completed"
