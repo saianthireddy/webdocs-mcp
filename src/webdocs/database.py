@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS pages (
     depth INTEGER,
     parent_id VARCHAR,
     root_id VARCHAR,
-    crawled_at TIMESTAMP
+    crawled_at TIMESTAMP,
+    etag VARCHAR,
+    last_modified VARCHAR
 );
 CREATE TABLE IF NOT EXISTS chunks (
     id VARCHAR PRIMARY KEY,
@@ -71,15 +73,30 @@ class Database:
         self._lock = threading.Lock()
         with self._lock:
             self._conn.execute(_SCHEMA)
+            self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns an older index file predates. Called with the lock held.
+
+        Databases created before conditional re-crawling have no etag or
+        last_modified column; adding them here means an existing index keeps
+        working instead of failing on first insert.
+        """
+        existing = {row[1] for row in self._conn.execute("PRAGMA table_info('pages')").fetchall()}
+        for column in ("etag", "last_modified"):
+            if column not in existing:
+                self._conn.execute(f"ALTER TABLE pages ADD COLUMN {column} VARCHAR")
+                logger.info("Migrated pages table: added %s", column)
 
     # -- ingestion -----------------------------------------------------
 
     def insert_page(self, page: CrawledPage) -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT OR REPLACE INTO pages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO pages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [page.id, page.url, page.title, page.text, page.domain,
-                 page.depth, page.parent_id, page.root_id, dt.datetime.now()],
+                 page.depth, page.parent_id, page.root_id, dt.datetime.now(),
+                 page.etag, page.last_modified],
             )
 
     def insert_chunks(self, page_id: str, texts: list[str], embeddings: list[np.ndarray]) -> None:
@@ -90,6 +107,39 @@ class Database:
         with self._lock:
             self._conn.execute("DELETE FROM chunks WHERE page_id = ?", [page_id])
             self._conn.executemany("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)", rows)
+
+    def touch_page(self, url: str) -> None:
+        """Record that *url* was re-checked and found unchanged."""
+        with self._lock:
+            self._conn.execute("UPDATE pages SET crawled_at = ? WHERE url = ?", [dt.datetime.now(), url])
+
+    # -- incremental re-crawl ------------------------------------------
+
+    def validators(self) -> dict[str, tuple[str | None, str | None]]:
+        """url -> (etag, last_modified) for every indexed page.
+
+        Read in one query rather than per-URL: a crawl asks about every page it
+        visits, and the whole table is small enough that N queries would be the
+        expensive choice.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT url, etag, last_modified FROM pages WHERE etag IS NOT NULL OR last_modified IS NOT NULL"
+            ).fetchall()
+        return {row[0]: (row[1], row[2]) for row in rows}
+
+    def known_links(self) -> dict[str, list[str]]:
+        """url -> child urls recorded last crawl, for traversing past a 304."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT parent.url, child.url FROM pages AS child "
+                "JOIN pages AS parent ON child.parent_id = parent.id "
+                "WHERE child.parent_id IS NOT NULL"
+            ).fetchall()
+        links: dict[str, list[str]] = {}
+        for parent_url, child_url in rows:
+            links.setdefault(parent_url, []).append(child_url)
+        return links
 
     # -- reads ---------------------------------------------------------
 

@@ -7,15 +7,16 @@ without touching crawl logic.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
-import uuid
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Protocol
 from urllib.parse import urlparse
 
 from webdocs.config import settings
+from webdocs.fetching import FetchResult, as_conditional
 from webdocs.html_utils import normalize_link, parse_page, same_domain
 from webdocs.robots import RobotsPolicy, Throttle
 
@@ -26,6 +27,18 @@ Fetcher = Callable[[str], str]
 
 class SupportsFetch(Protocol):  # pragma: no cover - typing helper
     def __call__(self, url: str) -> str: ...
+
+
+def page_id_for(root_url: str, url: str) -> str:
+    """Deterministic page id, so a re-crawl updates rows instead of duplicating.
+
+    Ids used to be random uuid4s, which meant ``INSERT OR REPLACE`` had nothing
+    to replace: crawling a 2-page site three times left six page rows, three
+    identical roots, and every chunk indexed three times. Hashing
+    (root, url) makes identity a function of the thing being crawled.
+    """
+    digest = hashlib.sha256(f"{root_url}\n{url}".encode()).hexdigest()
+    return digest[:32]
 
 
 @dataclass
@@ -39,6 +52,8 @@ class CrawledPage:
     parent_id: str | None
     root_id: str
     outgoing_links: list[str] = field(default_factory=list)
+    etag: str | None = None
+    last_modified: str | None = None
 
 
 def httpx_fetcher(url: str) -> str:
@@ -64,11 +79,20 @@ def crawl(
     respect_robots: bool | None = None,
     crawl_delay: float | None = None,
     sleep: Callable[[float], None] | None = None,
+    validators: Mapping[str, tuple[str | None, str | None]] | None = None,
+    known_links: Mapping[str, list[str]] | None = None,
+    on_unchanged: Callable[[str], None] | None = None,
 ) -> list[CrawledPage]:
     """Crawl *root_url* breadth-first, staying on the same domain.
 
     ``on_page`` fires after each successful page so callers (the job
     runner) can stream progress instead of waiting for the full crawl.
+
+    Pass ``validators`` (url -> (etag, last_modified)) to make conditional
+    requests on a re-crawl. When the server answers 304, ``on_unchanged`` fires
+    instead of ``on_page`` and traversal continues through ``known_links`` —
+    a 304 has no body, so the links that page yielded last time are the only
+    way to keep walking the tree.
 
     The crawl is polite by default: ``robots.txt`` is fetched once up front
     and every candidate URL is checked against it, and requests to a host
@@ -76,13 +100,15 @@ def crawl(
     ``Crawl-delay`` if it asks for more). Pass ``respect_robots=False`` only
     for sites you control.
     """
-    fetcher = fetcher or httpx_fetcher
+    fetch = as_conditional(fetcher or httpx_fetcher)
+    validators = validators or {}
+    known_links = known_links or {}
     max_pages = max_pages or settings.max_pages
     max_depth = max_depth if max_depth is not None else settings.max_depth
     respect_robots = settings.respect_robots if respect_robots is None else respect_robots
 
     root_url = root_url.rstrip("/") or root_url
-    root_id = uuid.uuid4().hex
+    root_id = page_id_for(root_url, root_url)
     domain = urlparse(root_url).netloc.lower()
 
     robots = RobotsPolicy(root_url, fetcher, settings.user_agent, enabled=respect_robots)
@@ -101,15 +127,27 @@ def crawl(
             logger.info("robots.txt disallows %s - skipping", url)
             continue
         throttle.wait(url)
+        stored_etag, stored_last_modified = validators.get(url, (None, None))
         try:
-            html = fetcher(url)
+            result: FetchResult = fetch(url, stored_etag, stored_last_modified)
         except Exception as exc:
             logger.warning("Skipping %s: %s", url, exc)
             continue
 
-        title, text, hrefs = parse_page(html)
+        if result.not_modified:
+            logger.debug("%s unchanged (304); reusing indexed content", url)
+            if on_unchanged is not None:
+                on_unchanged(url)
+            if depth < max_depth:
+                for link in known_links.get(url, []):
+                    if link not in seen and same_domain(link, root_url) and robots.is_allowed(link):
+                        seen.add(link)
+                        queue.append((link, depth + 1, page_id_for(root_url, url)))
+            continue
+
+        title, text, hrefs = parse_page(result.text)
         page = CrawledPage(
-            id=root_id if not pages else uuid.uuid4().hex,
+            id=page_id_for(root_url, url),
             url=url,
             title=title or url,
             text=text,
@@ -117,6 +155,8 @@ def crawl(
             depth=depth,
             parent_id=parent_id,
             root_id=root_id,
+            etag=result.etag,
+            last_modified=result.last_modified,
         )
 
         if depth < max_depth:

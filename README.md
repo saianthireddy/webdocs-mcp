@@ -136,6 +136,37 @@ All optional (see `.env.example`):
 | `WEBDOCS_RESPECT_ROBOTS` | `true` | Obey `robots.txt`. Only disable for sites you own |
 | `WEBDOCS_CRAWL_DELAY` | `1.0` | Seconds between requests to a host (floor — a site asking for more wins) |
 
+## Re-crawling incrementally
+
+Re-crawling used to duplicate the index. Page ids were random `uuid4`s, so the
+`INSERT OR REPLACE` had nothing to replace — crawling a two-page site three
+times left six page rows, three identical roots, and every chunk indexed three
+times, which quietly triples what search ranks over. Identity is now
+`sha256(root_url + url)`, so a re-crawl updates rows in place.
+
+With identity stable, cache validators do useful work:
+
+- **`ETag` and `Last-Modified` are stored per page** and sent back as
+  `If-None-Match` / `If-Modified-Since` on the next crawl.
+- **A 304 skips re-indexing** — no body downloaded, no chunking, no embedding.
+  Jobs report it separately as `pages_unchanged`.
+- **Traversal continues past a 304** using the links that page yielded last
+  crawl. A 304 has no body, so there is nothing to parse for links; the stored
+  parent/child edges are the only way onward.
+- **Older index files are migrated on open**, not rejected: the `etag` and
+  `last_modified` columns are added if missing, and legacy rows simply have no
+  validators so they re-fetch once.
+
+The fetcher contract widened without breaking. It was `(url) -> html`; it can
+now also be `(url, etag, last_modified) -> FetchResult`, and `as_conditional`
+detects which one it was handed. A plain fetcher never reports `not_modified`,
+so passing one behaves exactly as before — correct, just not saving work.
+
+```python
+crawl(url)                      # plain fetcher, full re-read
+crawl(url, validators=..., known_links=..., on_unchanged=...)   # conditional
+```
+
 ## Crawling politely
 
 Pointing a crawler at someone else's site is the one thing here with
@@ -171,14 +202,13 @@ crawl(url, crawl_delay=5.0)        # be extra gentle
 ## Testing
 
 ```bash
-pytest tests/ -v      # 42 tests: crawler, robots/throttle, chunker, embedder, DB, hybrid search, API, MCP
+pytest tests/ -v      # 54 tests: crawler, robots/throttle, incremental re-crawl, chunker, embedder, DB, hybrid search, API, MCP
 ```
 
 No test touches the network — the crawler tests run against an in-memory fake site injected through the fetcher interface, and each test gets a throwaway DuckDB file.
 
 ## Roadmap
 
-- [ ] Incremental re-crawls (etag/last-modified) instead of full re-index
 - [ ] Redis-backed worker pool using the existing compose service
 - [ ] OCR/text extraction for linked PDFs
 - [ ] DuckDB VSS extension (HNSW) once the index outgrows brute-force cosine
