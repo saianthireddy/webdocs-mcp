@@ -133,18 +133,51 @@ All optional (see `.env.example`):
 | `OPENAI_API_KEY` | — | Only for `openai` embedder |
 | `WEBDOCS_MAX_PAGES` / `WEBDOCS_MAX_DEPTH` | 50 / 3 | Crawl limits |
 | `WEBDOCS_CHUNK_SIZE` / `WEBDOCS_CHUNK_OVERLAP` | 1200 / 150 | Chunking |
+| `WEBDOCS_RESPECT_ROBOTS` | `true` | Obey `robots.txt`. Only disable for sites you own |
+| `WEBDOCS_CRAWL_DELAY` | `1.0` | Seconds between requests to a host (floor — a site asking for more wins) |
+
+## Crawling politely
+
+Pointing a crawler at someone else's site is the one thing here with
+consequences outside this repo, so it is on by default rather than opt-in:
+
+- **`robots.txt` is fetched once per crawl** and every candidate URL is checked
+  against it, both before queueing and before fetching. Disallowed paths are
+  skipped and logged.
+- **Requests to a host are spaced** by `WEBDOCS_CRAWL_DELAY` (1s default). If
+  `robots.txt` declares a larger `Crawl-delay`, the site's number wins.
+- **Missing or unreachable `robots.txt` means allow-all**, per RFC 9309 for a
+  404. This is a deliberate deviation for 5xx — the injected fetcher surfaces
+  no status code, so a 503 and a DNS failure look identical, and blocking every
+  crawl on a transient blip is the worse failure mode.
+- **Fractional `Crawl-delay` is honoured.** `urllib.robotparser` guards on
+  `str.isdigit()` and silently discards `Crawl-delay: 0.5`, so `robots.py`
+  re-reads the value itself and takes whichever is larger.
+- **Known deviation:** conflicting rules resolve first-match-wins
+  (`urllib.robotparser`) rather than RFC 9309's longest-match, so
+  `Disallow: /docs/` followed by `Allow: /docs/public/` blocks the latter. The
+  error is always over-restrictive — pages get skipped, never wrongly fetched.
+
+Both pieces are injected, not baked in: `RobotsPolicy` takes the same
+`(url) -> html` fetcher the crawler uses, and `Throttle` takes clock and sleep
+callables, so the whole thing is asserted against a fake clock instead of
+spending real seconds in CI.
+
+```python
+crawl(url, respect_robots=False)   # sites you control
+crawl(url, crawl_delay=5.0)        # be extra gentle
+```
 
 ## Testing
 
 ```bash
-pytest tests/ -v      # 23 tests: crawler, chunker, embedder, DB, hybrid search, API, MCP
+pytest tests/ -v      # 42 tests: crawler, robots/throttle, chunker, embedder, DB, hybrid search, API, MCP
 ```
 
 No test touches the network — the crawler tests run against an in-memory fake site injected through the fetcher interface, and each test gets a throwaway DuckDB file.
 
 ## Roadmap
 
-- [ ] Respect `robots.txt` and add per-domain rate limiting
 - [ ] Incremental re-crawls (etag/last-modified) instead of full re-index
 - [ ] Redis-backed worker pool using the existing compose service
 - [ ] OCR/text extraction for linked PDFs
