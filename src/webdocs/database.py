@@ -141,6 +141,41 @@ class Database:
             links.setdefault(parent_url, []).append(child_url)
         return links
 
+    def urls_under_root(self, root_id: str) -> list[str]:
+        with self._lock:
+            rows = self._conn.execute("SELECT url FROM pages WHERE root_id = ?", [root_id]).fetchall()
+        return [r[0] for r in rows]
+
+    def prune_pages(self, root_id: str, keep_urls: set[str]) -> list[str]:
+        """Delete indexed pages under *root_id* whose URL is not in *keep_urls*.
+
+        Scoped to one root on purpose: crawling site A must never delete site
+        B's pages, and root_id is derived from the root URL so the scope is
+        exactly the site being re-crawled.
+
+        Chunks are deleted first. If it were the other way round and the process
+        died between the two statements, the index would keep orphan chunks with
+        no page to attribute them to, which is worse than a page row with no
+        chunks — search reads chunks.
+        """
+        stale = [url for url in self.urls_under_root(root_id) if url not in keep_urls]
+        if not stale:
+            return []
+        with self._lock:
+            placeholders = ", ".join("?" * len(stale))
+            self._conn.execute(
+                f"DELETE FROM chunks WHERE page_id IN ("
+                f"  SELECT id FROM pages WHERE root_id = ? AND url IN ({placeholders})"
+                f")",
+                [root_id, *stale],
+            )
+            self._conn.execute(
+                f"DELETE FROM pages WHERE root_id = ? AND url IN ({placeholders})",
+                [root_id, *stale],
+            )
+        logger.info("Pruned %d stale page(s) under root %s", len(stale), root_id)
+        return stale
+
     # -- reads ---------------------------------------------------------
 
     def list_pages(self) -> list[PageRecord]:
