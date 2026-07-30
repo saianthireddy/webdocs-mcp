@@ -134,6 +134,7 @@ All optional (see `.env.example`):
 | `WEBDOCS_MAX_PAGES` / `WEBDOCS_MAX_DEPTH` | 50 / 3 | Crawl limits |
 | `WEBDOCS_CHUNK_SIZE` / `WEBDOCS_CHUNK_OVERLAP` | 1200 / 150 | Chunking |
 | `WEBDOCS_RESPECT_ROBOTS` | `true` | Obey `robots.txt`. Only disable for sites you own |
+| `WEBDOCS_PRUNE_MISSING` | `true` | Delete indexed pages no longer linked from the site |
 | `WEBDOCS_CRAWL_DELAY` | `1.0` | Seconds between requests to a host (floor — a site asking for more wins) |
 
 ## Re-crawling incrementally
@@ -153,6 +154,9 @@ With identity stable, cache validators do useful work:
 - **Traversal continues past a 304** using the links that page yielded last
   crawl. A 304 has no body, so there is nothing to parse for links; the stored
   parent/child edges are the only way onward.
+- **Pages that vanish are pruned.** If a URL is no longer linked anywhere on the
+  site, its page row and its chunks are deleted, so a restructured docs site
+  does not leave the index answering from URLs that no longer exist.
 - **Older index files are migrated on open**, not rejected: the `etag` and
   `last_modified` columns are added if missing, and legacy rows simply have no
   validators so they re-fetch once.
@@ -166,6 +170,26 @@ so passing one behaves exactly as before — correct, just not saving work.
 crawl(url)                      # plain fetcher, full re-read
 crawl(url, validators=..., known_links=..., on_unchanged=...)   # conditional
 ```
+
+### When pruning deliberately does nothing
+
+Deleting indexed content is the only operation here that loses data, so it only
+runs when the crawl can positively explain every URL it knew about. A page is
+kept — not pruned — if it:
+
+- **failed to fetch.** The fetcher contract returns `str` and surfaces no status
+  code, so a 404 and a 503 are indistinguishable. Deleting a page because of a
+  transient error is much worse than leaving a dead one indexed.
+- **was disallowed by `robots.txt`.** Being told not to look is not evidence of
+  absence.
+- **was never reached because `max_pages` cut the crawl short.** Then absence is
+  unexplained rather than meaningful, and pruning is skipped entirely for that
+  run.
+
+Pruning is also scoped to one root, derived from the root URL, so re-crawling
+site A can never delete site B's pages. `CrawlResult` carries the four outcome
+sets and the `truncated` flag that make this decidable; `test_pruning.py` asserts
+each refusal case separately.
 
 ## Crawling politely
 
@@ -202,7 +226,7 @@ crawl(url, crawl_delay=5.0)        # be extra gentle
 ## Testing
 
 ```bash
-pytest tests/ -v      # 54 tests: crawler, robots/throttle, incremental re-crawl, chunker, embedder, DB, hybrid search, API, MCP
+pytest tests/ -v      # 65 tests: crawler, robots/throttle, incremental re-crawl, pruning, chunker, embedder, DB, hybrid search, API, MCP
 ```
 
 No test touches the network — the crawler tests run against an in-memory fake site injected through the fetcher interface, and each test gets a throwaway DuckDB file.

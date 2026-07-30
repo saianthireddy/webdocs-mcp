@@ -45,6 +45,7 @@ class Settings:
     request_timeout: float = 15.0
     respect_robots: bool = field(default_factory=lambda: _bool_env("WEBDOCS_RESPECT_ROBOTS", True))
     crawl_delay: float = field(default_factory=lambda: _float_env("WEBDOCS_CRAWL_DELAY", 1.0))
+    prune_missing: bool = field(default_factory=lambda: _bool_env("WEBDOCS_PRUNE_MISSING", True))
     user_agent: str = "webdocs-mcp/1.0 (+https://github.com/saianthireddy/webdocs-mcp)"
 
 
