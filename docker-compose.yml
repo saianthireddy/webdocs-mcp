@@ -4,9 +4,13 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     ports:
-      - "9111:9111"
+      # Published on loopback only. To expose it beyond this machine, set
+      # WEBDOCS_API_KEY and put it behind a TLS reverse proxy.
+      - "127.0.0.1:9111:9111"
     environment:
       WEBDOCS_DB_PATH: /data/webdocs.duckdb
+      WEBDOCS_API_KEY: ${WEBDOCS_API_KEY:-}
+      WEBDOCS_ALLOW_PRIVATE_NETWORKS: ${WEBDOCS_ALLOW_PRIVATE_NETWORKS:-false}
       WEBDOCS_EMBEDDER: ${WEBDOCS_EMBEDDER:-hashing}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
@@ -17,10 +21,9 @@ services:
   # Present for the scale-out path: point a worker pool at this broker and
   # swap JobManager's thread execution for queue consumers. The single-node
   # default does not require it.
+  # Not published to the host: only services on the compose network need it.
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
 
 volumes:
   webdocs-data:

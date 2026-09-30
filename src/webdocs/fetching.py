@@ -78,7 +78,7 @@ def httpx_conditional_fetcher(
     the stored ones survive a re-crawl. Any other non-2xx still raises, which
     the crawler already treats as "skip this page and keep going".
     """
-    import httpx
+    from webdocs.url_safety import guarded_get
 
     headers = {"User-Agent": settings.user_agent}
     if etag:
@@ -86,7 +86,8 @@ def httpx_conditional_fetcher(
     if last_modified:
         headers["If-Modified-Since"] = last_modified
 
-    response = httpx.get(url, timeout=settings.request_timeout, follow_redirects=True, headers=headers)
+    # guarded_get refuses non-public targets and re-checks every redirect hop.
+    response = guarded_get(url, headers=headers)
     if response.status_code == 304:
         return FetchResult(etag=etag, last_modified=last_modified, not_modified=True)
     response.raise_for_status()

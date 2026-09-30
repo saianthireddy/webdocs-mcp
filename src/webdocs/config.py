@@ -47,6 +47,12 @@ class Settings:
     crawl_delay: float = field(default_factory=lambda: _float_env("WEBDOCS_CRAWL_DELAY", 1.0))
     prune_missing: bool = field(default_factory=lambda: _bool_env("WEBDOCS_PRUNE_MISSING", True))
     user_agent: str = "webdocs-mcp/1.0 (+https://github.com/saianthireddy/webdocs-mcp)"
+    # SSRF guard: refuse to fetch loopback/private/link-local addresses unless
+    # you are deliberately crawling an internal site.
+    allow_private_networks: bool = field(default_factory=lambda: _bool_env("WEBDOCS_ALLOW_PRIVATE_NETWORKS", False))
+    # When set, every route except /health requires this key
+    # (``Authorization: Bearer <key>`` or ``X-API-Key: <key>``).
+    api_key: str | None = field(default_factory=lambda: os.environ.get("WEBDOCS_API_KEY") or None)
 
 
 settings = Settings()

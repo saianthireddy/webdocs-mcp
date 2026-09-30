@@ -17,4 +17,7 @@ EXPOSE 9111
 HEALTHCHECK --interval=30s --timeout=5s \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:9111/health')"
 
+# 0.0.0.0 is the container's own interface, required for port publishing to
+# work. What is reachable from outside is decided by the publish rule:
+# docker-compose.yml publishes on 127.0.0.1 only.
 CMD ["uvicorn", "webdocs.api:app", "--host", "0.0.0.0", "--port", "9111"]
