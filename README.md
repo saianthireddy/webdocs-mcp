@@ -81,6 +81,18 @@ docker compose up --build
 # app on :9111, index persisted in the webdocs-data volume
 ```
 
+## Security
+
+`POST /fetch_url` makes the server fetch a URL that the caller chooses, so outbound requests are restricted:
+
+- Only `http` and `https` URLs are accepted. URLs with embedded credentials are rejected.
+- The hostname must resolve only to public addresses. Loopback, private, link-local (including cloud metadata at `169.254.169.254`), CGNAT, multicast and reserved ranges are refused with a `400`.
+- Redirects are followed by hand, and every hop is re-checked. A public page that redirects to an internal address is refused.
+
+To crawl an intranet docs site on purpose, set `WEBDOCS_ALLOW_PRIVATE_NETWORKS=true`.
+
+Set `WEBDOCS_API_KEY` to require `Authorization: Bearer <key>` (or `X-API-Key: <key>`) on every route except `/health`. `docker compose` publishes the port on `127.0.0.1` only. Before exposing the service to other machines, set an API key and put it behind a TLS reverse proxy.
+
 ## MCP integration
 
 Add to Cursor / VS Code / Claude Code MCP configuration:
