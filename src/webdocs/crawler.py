@@ -94,15 +94,14 @@ class CrawledPage:
 
 
 def httpx_fetcher(url: str) -> str:
-    """Default production fetcher: a plain GET with sane timeouts."""
-    import httpx
+    """Default production fetcher: a plain GET with sane timeouts.
 
-    response = httpx.get(
-        url,
-        timeout=settings.request_timeout,
-        follow_redirects=True,
-        headers={"User-Agent": settings.user_agent},
-    )
+    Goes through the SSRF guard, which refuses non-public targets and
+    re-validates every redirect hop.
+    """
+    from webdocs.url_safety import guarded_get
+
+    response = guarded_get(url, headers={"User-Agent": settings.user_agent})
     response.raise_for_status()
     return response.text
 
@@ -181,7 +180,9 @@ def crawl_detailed(
     root_id = page_id_for(root_url, root_url)
     domain = urlparse(root_url).netloc.lower()
 
-    robots = RobotsPolicy(root_url, fetcher, settings.user_agent, enabled=respect_robots)
+    # Pass the resolved fetcher: with ``fetcher=None`` RobotsPolicy used to call
+    # None, swallow the TypeError and silently treat every site as allow-all.
+    robots = RobotsPolicy(root_url, fetcher or httpx_fetcher, settings.user_agent, enabled=respect_robots)
     delay = settings.crawl_delay if crawl_delay is None else crawl_delay
     if robots.crawl_delay is not None:
         delay = max(delay, robots.crawl_delay)
