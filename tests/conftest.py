@@ -72,6 +72,29 @@ def indexed_client(client: TestClient) -> TestClient:
 
 
 @pytest.fixture(autouse=True)
+def _offline_dns(monkeypatch):
+    """Keep the SSRF guard's DNS lookup offline.
+
+    Every hostname resolves to a fixed public address unless a
+    test overrides it. Literal IPs still go through the real parser, so
+    ``http://127.0.0.1`` is refused exactly as in production.
+    """
+    import ipaddress
+
+    from webdocs import url_safety
+
+    def _resolve(host: str, port: int) -> list[str]:
+        try:
+            return [str(ipaddress.ip_address(host))]
+        except ValueError:
+            return ["93.184.215.14"]
+
+    monkeypatch.setattr(url_safety, "_system_resolver", _resolve)
+    monkeypatch.setattr(settings, "api_key", None)
+    monkeypatch.setattr(settings, "allow_private_networks", False)
+
+
+@pytest.fixture(autouse=True)
 def _no_crawl_delay(monkeypatch):
     """Keep the suite instant: the polite default delay is real seconds.
 
